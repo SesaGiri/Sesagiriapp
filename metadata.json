@@ -1,0 +1,8 @@
+{
+  "name": "Copy of Smart Attendance AI",
+  "description": "An AI-powered attendance automation tool for teachers. Supports manual entry, image analysis, audio voice notes, and real-time conversational attendance taking using Gemini.",
+  "requestFramePermissions": [
+    "microphone",
+    "camera"
+  ]
+}
