@@ -3,40 +3,726 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>I Rig</title>
+    <title>I Rig - AI Attendance</title>
+    
+    <!-- Styles & Fonts -->
     <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;900&display=swap" rel="stylesheet">
+    
+    <!-- Libraries -->
     <script src="https://cdn.sheetjs.com/xlsx-0.20.2/package/dist/xlsx.full.min.js"></script>
+    
+    <!-- React & Babel -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    
     <style>
-      /* Custom scrollbar for cleaner look */
-      ::-webkit-scrollbar {
-        width: 8px;
-        height: 8px;
-      }
-      ::-webkit-scrollbar-track {
-        background: #f1f5f9;
-      }
-      ::-webkit-scrollbar-thumb {
-        background: #cbd5e1;
-        border-radius: 4px;
-      }
-      ::-webkit-scrollbar-thumb:hover {
-        background: #94a3b8;
-      }
+      body { font-family: 'Inter', sans-serif; }
+      ::-webkit-scrollbar { width: 6px; height: 6px; }
+      ::-webkit-scrollbar-track { background: transparent; }
+      ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
+      ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+      .animate-fade-in { animation: fadeIn 0.3s ease-out; }
+      @keyframes fadeIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
     </style>
-  <script type="importmap">
+
+    <script type="importmap">
 {
   "imports": {
+    "react": "https://esm.sh/react@18.2.0",
+    "react-dom/client": "https://esm.sh/react-dom@18.2.0/client",
+    "lucide-react": "https://esm.sh/lucide-react@0.292.0",
+    "recharts": "https://esm.sh/recharts@2.12.0?external=react,react-dom",
+    "@google/genai": "https://esm.sh/@google/genai@0.1.1",
     "react/": "https://aistudiocdn.com/react@^19.2.0/",
-    "react": "https://aistudiocdn.com/react@^19.2.0",
-    "lucide-react": "https://aistudiocdn.com/lucide-react@^0.555.0",
-    "recharts": "https://aistudiocdn.com/recharts@^3.5.1",
-    "@google/genai": "https://aistudiocdn.com/@google/genai@^1.30.0",
     "react-dom/": "https://aistudiocdn.com/react-dom@^19.2.0/"
   }
 }
 </script>
-</head>
-  <body class="bg-slate-50 text-slate-900 font-sans antialiased">
+  </head>
+  <body class="bg-slate-50 text-slate-900">
     <div id="root"></div>
+
+    <script type="text/babel" data-type="module" data-presets="react,typescript">
+import React, { useState, useEffect, useRef } from 'react';
+import ReactDOM from 'react-dom/client';
+import { 
+  LayoutDashboard, Users, FileInput, Mic, UserCircle, LogOut, MessageSquare, Search, 
+  Home, Upload, PlusCircle, Check, X, Save, Briefcase, ArrowLeft, Plus, Edit2, Calendar, 
+  ChevronDown, Sun, Moon, FileSpreadsheet, Image as ImageIcon, Trash2, ChevronRight, 
+  FileText, Info, Loader2, RefreshCw, XCircle, Send, Activity, AlertCircle, CheckCircle2,
+  FileAudio, Download
+} from 'lucide-react';
+import { 
+  PieChart, Pie, Cell, ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip 
+} from 'recharts';
+import { GoogleGenAI, Type, Modality } from "@google/genai";
+
+// --- TYPES ---
+enum AttendanceStatus {
+  PRESENT = 'PRESENT',
+  ABSENT = 'ABSENT',
+  LATE = 'LATE',
+  EXCUSED = 'EXCUSED',
+  ON_DUTY = 'ON_DUTY',
+  UNMARKED = 'UNMARKED'
+}
+
+enum SessionType {
+  FORENOON = 'FORENOON',
+  AFTERNOON = 'AFTERNOON'
+}
+
+interface Student {
+  id: string;
+  classId: string;
+  name: string;
+  rollNo: string;
+}
+
+interface AttendanceRecord {
+  studentId: string;
+  date: string;
+  session: SessionType;
+  status: AttendanceStatus;
+}
+
+interface ClassInfo {
+    id: string;
+    name: string;
+    totalStudents: number;
+}
+
+interface UploadedFile {
+    id: string;
+    name: string;
+    type: 'image' | 'audio' | 'video' | 'note' | 'document';
+    date: string;
+    url?: string;
+    content?: string;
+    size?: string;
+}
+
+type ViewMode = 'dashboard' | 'roster' | 'media-upload' | 'live-agent' | 'search' | 'student-history';
+
+interface AIAnalysisResult {
+  rollNo?: string;
+  name?: string;
+  status: AttendanceStatus;
+  date?: string;
+  session?: string;
+  className?: string;
+}
+
+// --- SERVICES ---
+
+// Audio Utils
+function base64ToUint8Array(base64) {
+  const binaryString = atob(base64);
+  const len = binaryString.length;
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i++) bytes[i] = binaryString.charCodeAt(i);
+  return bytes;
+}
+
+function arrayBufferToBase64(buffer) {
+  let binary = '';
+  const bytes = new Uint8Array(buffer);
+  const len = bytes.byteLength;
+  for (let i = 0; i < len; i++) binary += String.fromCharCode(bytes[i]);
+  return btoa(binary);
+}
+
+function createPcmBlob(data) {
+  const l = data.length;
+  const int16 = new Int16Array(l);
+  for (let i = 0; i < l; i++) int16[i] = data[i] * 32768;
+  return {
+    data: arrayBufferToBase64(int16.buffer),
+    mimeType: 'audio/pcm;rate=16000',
+  };
+}
+
+async function decodeAudioData(data, ctx, sampleRate = 24000, numChannels = 1) {
+  const dataInt16 = new Int16Array(data.buffer);
+  const frameCount = dataInt16.length / numChannels;
+  const buffer = ctx.createBuffer(numChannels, frameCount, sampleRate);
+  for (let channel = 0; channel < numChannels; channel++) {
+    const channelData = buffer.getChannelData(channel);
+    for (let i = 0; i < frameCount; i++) channelData[i] = dataInt16[i * numChannels + channel] / 32768.0;
+  }
+  return buffer;
+}
+
+// Gemini Service
+const getApiKey = () => {
+  try {
+    const localKey = localStorage.getItem('gemini_api_key');
+    if (localKey) return localKey;
+    // Fallback for deployment environments if set globally
+    if (window.ENV_API_KEY) return window.ENV_API_KEY; 
+  } catch (e) {}
+  return '';
+};
+
+const apiKey = getApiKey();
+const ai = new GoogleGenAI({ apiKey });
+
+const fileToGenerativePart = async (file) => {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      const base64String = (reader.result).split(',')[1];
+      resolve({
+        inlineData: { data: base64String, mimeType: file.type || 'text/plain' },
+      });
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+};
+
+const getAnalysisPrompt = (students, context) => {
+    const studentContext = JSON.stringify(students.map(s => ({ rollNo: s.rollNo, name: s.name })));
+    return `
+    You are an attendance assistant. I am providing ${context}.
+    Master list: ${studentContext}.
+    Extract: Class Name, Date (YYYY-MM-DD), Session (FN/AN), and Attendance Status.
+    Return JSON array: [{ rollNo, status (PRESENT/ABSENT), date, session, className }]
+    `;
+}
+
+const analyzeAttendanceImage = async (file, students) => {
+  if(!getApiKey()) return [];
+  const imagePart = await fileToGenerativePart(file);
+  const prompt = getAnalysisPrompt(students, "an image of an attendance sheet");
+  try {
+    const response = await ai.models.generateContent({
+        model: 'gemini-2.5-flash',
+        contents: { parts: [imagePart, { text: prompt }] },
+        config: { responseMimeType: 'application/json' }
+    });
+    return response.text ? JSON.parse(response.text) : [];
+  } catch(e) { console.error(e); return []; }
+};
+
+const analyzeAttendanceAudio = async (file, students) => {
+  if(!getApiKey()) return [];
+  const audioPart = await fileToGenerativePart(file);
+  const prompt = getAnalysisPrompt(students, "an audio recording of attendance");
+  try {
+    const response = await ai.models.generateContent({
+        model: 'gemini-2.5-flash',
+        contents: { parts: [audioPart, { text: prompt }] },
+        config: { responseMimeType: 'application/json' }
+    });
+    return response.text ? JSON.parse(response.text) : [];
+  } catch(e) { console.error(e); return []; }
+};
+
+const analyzeAttendanceText = async (file, students) => {
+    if(!getApiKey()) return [];
+    const textContent = await file.text();
+    const prompt = getAnalysisPrompt(students, `text: "${textContent.substring(0, 5000)}..."`);
+    try {
+        const response = await ai.models.generateContent({
+            model: 'gemini-2.5-flash',
+            contents: { parts: [{ text: prompt }] },
+            config: { responseMimeType: 'application/json' }
+        });
+        return response.text ? JSON.parse(response.text) : [];
+    } catch(e) { return []; }
+}
+
+const getGeminiLiveClient = () => {
+    if (!getApiKey()) throw new Error("API Key Missing");
+    return new GoogleGenAI({ apiKey: getApiKey() });
+}
+
+// --- COMPONENTS ---
+
+// 1. API Key Modal
+const ApiKeyModal = ({ isOpen, onClose }) => {
+    const [key, setKey] = useState('');
+    if (!isOpen) return null;
+    return (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 p-4">
+            <div className="bg-white p-6 rounded-2xl w-full max-w-sm">
+                <h2 className="text-xl font-bold mb-4">Enter Gemini API Key</h2>
+                <input type="password" value={key} onChange={e=>setKey(e.target.value)} placeholder="AIza..." className="w-full p-3 border rounded-xl mb-4" />
+                <button onClick={() => { localStorage.setItem('gemini_api_key', key); onClose(); window.location.reload(); }} className="w-full bg-indigo-600 text-white p-3 rounded-xl font-bold">Save & Start</button>
+                <a href="https://aistudio.google.com/app/apikey" target="_blank" className="block text-center mt-4 text-indigo-600 text-xs">Get API Key</a>
+            </div>
+        </div>
+    )
+}
+
+// 2. Class Selector
+const ClassSelector = ({ classes, onSelect }) => {
+    const [selectedClassId, setSelectedClassId] = useState('');
+    const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
+    const [session, setSession] = useState(SessionType.FORENOON);
+
+    return (
+        <div className="flex flex-col items-center justify-center h-full p-6 pb-24">
+             <div className="bg-white p-8 rounded-3xl shadow-xl w-full max-w-md border border-slate-100 relative overflow-hidden">
+                <div className="absolute top-0 left-0 w-full h-2 bg-gradient-to-r from-indigo-500 to-purple-500"></div>
+                <h2 className="text-2xl font-black text-slate-800 mb-2 text-center">Take Attendance</h2>
+                <div className="space-y-6 mt-6">
+                    <div>
+                        <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Class Name</label>
+                        <select value={selectedClassId} onChange={(e) => setSelectedClassId(e.target.value)} className="w-full p-3 bg-slate-50 border rounded-xl">
+                            <option value="">Select a Class</option>
+                            {classes.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                        </select>
+                    </div>
+                    <div>
+                        <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Date</label>
+                        <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="w-full p-3 bg-slate-50 border rounded-xl" />
+                    </div>
+                    <div className="grid grid-cols-2 gap-3">
+                         <button onClick={() => setSession(SessionType.FORENOON)} className={`p-3 rounded-xl font-bold border ${session === SessionType.FORENOON ? 'bg-orange-50 text-orange-600 border-orange-200' : 'bg-white'}`}>FN</button>
+                         <button onClick={() => setSession(SessionType.AFTERNOON)} className={`p-3 rounded-xl font-bold border ${session === SessionType.AFTERNOON ? 'bg-indigo-50 text-indigo-600 border-indigo-200' : 'bg-white'}`}>AN</button>
+                    </div>
+                    <button onClick={() => selectedClassId && onSelect(selectedClassId, new Date(date).toDateString(), session)} className="w-full bg-indigo-600 text-white font-bold py-4 rounded-xl shadow-lg mt-4">Open Register</button>
+                </div>
+             </div>
+        </div>
+    );
+};
+
+// 3. Student Table
+const StudentTable = ({ students, records, initialDate, initialSession, classNameStr, classes, selectedClassId, onSwitchClass, onUpdateStatus, onUpdateStudent, onRenameClass, onBack, onSave, onContextUpdate }) => {
+  const [searchTerm, setSearchTerm] = useState('');
+  const [isRenaming, setIsRenaming] = useState(false);
+  const [tempName, setTempName] = useState(classNameStr);
+  const [columns, setColumns] = useState([{ id: '1', date: initialDate, session: initialSession }]);
+
+  useEffect(() => { onContextUpdate(initialDate, initialSession); }, []);
+  useEffect(() => setTempName(classNameStr), [classNameStr]);
+
+  const addNextColumn = () => {
+      const last = columns[columns.length - 1];
+      let nextSess = last.session === SessionType.FORENOON ? SessionType.AFTERNOON : SessionType.FORENOON;
+      let nextDate = last.session === SessionType.FORENOON ? last.date : new Date(new Date(last.date).setDate(new Date(last.date).getDate() + 1)).toDateString();
+      setColumns([...columns, { id: Math.random().toString(), date: nextDate, session: nextSess }]);
+  };
+
+  const filtered = students.filter(s => s.name.toLowerCase().includes(searchTerm.toLowerCase()) || s.rollNo.toLowerCase().includes(searchTerm.toLowerCase()));
+
+  return (
+    <div className="flex flex-col h-full bg-white lg:rounded-xl shadow-sm border border-slate-200 pb-20 lg:pb-0">
+      <div className="p-4 border-b sticky top-0 bg-white z-20 space-y-3">
+          <div className="flex justify-between items-center">
+              <div className="flex items-center gap-2">
+                  <button onClick={onBack} className="lg:hidden p-2 rounded-full hover:bg-slate-100"><ArrowLeft size={20}/></button>
+                  {isRenaming ? (
+                      <div className="flex items-center gap-2"><input value={tempName} onChange={e=>setTempName(e.target.value)} className="border rounded p-1 font-bold" autoFocus /><button onClick={()=>{onRenameClass(tempName); setIsRenaming(false)}}><Check size={20} className="text-green-600"/></button></div>
+                  ) : (
+                      <div className="flex items-center gap-2 group">
+                          <select value={selectedClassId} onChange={e=>onSwitchClass(e.target.value)} className="font-bold text-lg bg-transparent outline-none cursor-pointer hover:bg-slate-50 rounded p-1">
+                              {classes.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
+                          </select>
+                          <button onClick={()=>setIsRenaming(true)} className="opacity-0 group-hover:opacity-100 p-1 hover:bg-slate-100 rounded"><Edit2 size={14}/></button>
+                      </div>
+                  )}
+              </div>
+              <button onClick={onSave} className="px-4 py-2 bg-indigo-600 text-white text-xs font-bold rounded-lg flex items-center gap-2"><Save size={14}/> Save</button>
+          </div>
+          <div className="relative"><Search className="absolute left-3 top-2.5 text-slate-400" size={16}/><input placeholder="Search..." value={searchTerm} onChange={e=>setSearchTerm(e.target.value)} className="w-full pl-9 p-2 bg-slate-50 border rounded-lg text-sm" /></div>
+      </div>
+      <div className="overflow-auto flex-1">
+        <table className="min-w-full text-left text-xs border-collapse">
+          <thead className="bg-slate-100 sticky top-0 z-10">
+            <tr>
+              <th className="p-2 border text-center w-12 sticky left-0 bg-slate-100">#</th>
+              <th className="p-2 border text-center w-16 sticky left-12 bg-slate-100">Roll</th>
+              <th className="p-2 border sticky left-28 bg-slate-100 min-w-[120px]">Name</th>
+              {columns.map(col => (
+                  <th key={col.id} className="p-2 border text-center min-w-[100px] bg-slate-50">
+                      <div className="flex flex-col items-center">
+                          <input type="date" value={new Date(col.date).toISOString().split('T')[0]} onChange={(e) => {
+                              const d = new Date(e.target.value).toDateString();
+                              setColumns(prev => prev.map(c => c.id === col.id ? { ...c, date: d } : c));
+                              onContextUpdate(d, col.session);
+                          }} className="bg-transparent text-[10px] text-center font-bold mb-1 cursor-pointer"/>
+                          <select value={col.session} onChange={e => {
+                              const s = e.target.value;
+                              setColumns(prev => prev.map(c => c.id === col.id ? { ...c, session: s } : c));
+                              onContextUpdate(col.date, s);
+                          }} className="text-[10px] bg-white border rounded px-1"><option value={SessionType.FORENOON}>FN</option><option value={SessionType.AFTERNOON}>AN</option></select>
+                      </div>
+                  </th>
+              ))}
+              <th className="p-2 border w-10 text-center"><button onClick={addNextColumn}><Plus size={16}/></button></th>
+            </tr>
+          </thead>
+          <tbody>
+            {filtered.map((s, i) => (
+                <tr key={s.id} className="hover:bg-slate-50">
+                  <td className="p-2 border text-center sticky left-0 bg-white">{i + 1}</td>
+                  <td className="p-0 border sticky left-12 bg-white"><input value={s.rollNo} onChange={e=>onUpdateStudent(s.id, 'rollNo', e.target.value)} className="w-full h-full p-2 text-center outline-none bg-transparent" /></td>
+                  <td className="p-0 border sticky left-28 bg-white"><input value={s.name} onChange={e=>onUpdateStudent(s.id, 'name', e.target.value)} className="w-full h-full p-2 outline-none bg-transparent" /></td>
+                  {columns.map(col => {
+                      const rec = records.find(r => r.studentId === s.id && r.date === col.date && r.session === col.session);
+                      const status = rec ? rec.status : 'UNMARKED';
+                      return (
+                        <td key={col.id} className="p-2 border text-center relative group">
+                             <div className={`font-bold ${status === 'PRESENT' ? 'text-green-600' : status === 'ABSENT' ? 'text-red-600' : 'text-slate-300'}`}>{status === 'PRESENT' ? 'P' : status === 'ABSENT' ? 'A' : '-'}</div>
+                             <div className="absolute inset-0 bg-white hidden group-hover:flex items-center justify-center gap-1">
+                                <button onClick={()=>onUpdateStatus(s.id, AttendanceStatus.PRESENT, col.date, col.session)} className="bg-green-100 text-green-600 rounded p-1"><Check size={12}/></button>
+                                <button onClick={()=>onUpdateStatus(s.id, AttendanceStatus.ABSENT, col.date, col.session)} className="bg-red-100 text-red-600 rounded p-1"><X size={12}/></button>
+                             </div>
+                        </td>
+                      );
+                  })}
+                  <td className="border"></td>
+                </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+};
+
+// 4. Live Attendance
+const LiveAttendance = ({ students, onLiveUpdate, onBulkUpdate, onClose }) => {
+  const [isConnected, setIsConnected] = useState(false);
+  const [isConnecting, setIsConnecting] = useState(false);
+  const [messages, setMessages] = useState([]);
+  const [textInput, setTextInput] = useState('');
+  
+  const onLiveUpdateRef = useRef(onLiveUpdate);
+  const onBulkUpdateRef = useRef(onBulkUpdate);
+  const audioCtxRef = useRef(null);
+  const sessionRef = useRef(null);
+  const mounted = useRef(true);
+
+  useEffect(() => { onLiveUpdateRef.current = onLiveUpdate; onBulkUpdateRef.current = onBulkUpdate; }, [onLiveUpdate, onBulkUpdate]);
+  useEffect(() => () => { reset(); }, []);
+
+  const reset = () => {
+      setIsConnected(false); setIsConnecting(false);
+      try { sessionRef.current?.close(); audioCtxRef.current?.close(); } catch(e){}
+  }
+
+  const startSession = async () => {
+      if(isConnecting) { reset(); return; }
+      setIsConnecting(true);
+      
+      try {
+          const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          const AudioContext = window.AudioContext || window.webkitAudioContext;
+          const ctx = new AudioContext({ sampleRate: 16000 });
+          await ctx.resume();
+          audioCtxRef.current = ctx;
+
+          const client = getGeminiLiveClient();
+          const session = await client.live.connect({
+              model: 'gemini-2.5-flash-native-audio-preview-09-2025',
+              callbacks: {
+                  onopen: () => { setIsConnected(true); setIsConnecting(false); },
+                  onmessage: (msg) => {
+                      if(msg.serverContent?.inputTranscription?.text) {
+                          const txt = msg.serverContent.inputTranscription.text;
+                          setMessages(p => [...p, {role: 'user', text: txt}]);
+                          parseCommand(txt);
+                      }
+                      if(msg.toolCall) {
+                          msg.toolCall.functionCalls.forEach(fc => {
+                              if(fc.name === 'markAttendance') {
+                                  onLiveUpdateRef.current(String(fc.args.rollNo), fc.args.status.toUpperCase());
+                                  setMessages(p => [...p, {role: 'ai', text: `Marked ${fc.args.rollNo} ${fc.args.status}`}]);
+                              } else if (fc.name === 'markAllAttendance') {
+                                  onBulkUpdateRef.current(fc.args.status.toUpperCase());
+                                  setMessages(p => [...p, {role: 'ai', text: `Marked all ${fc.args.status}`}]);
+                              }
+                          });
+                          session.sendToolResponse({ functionResponses: msg.toolCall.functionCalls.map(f => ({id: f.id, name: f.name, response: {result:'ok'}}))});
+                      }
+                  },
+                  onclose: reset,
+                  onerror: reset
+              },
+              config: {
+                  tools: [{ functionDeclarations: [
+                      { name: 'markAttendance', parameters: { type: 'OBJECT', properties: { rollNo: {type:'STRING'}, status: {type:'STRING', enum:['PRESENT','ABSENT']} }, required: ['rollNo','status'] } },
+                      { name: 'markAllAttendance', parameters: { type: 'OBJECT', properties: { status: {type:'STRING', enum:['PRESENT','ABSENT']} }, required: ['status'] } }
+                  ]}],
+                  systemInstruction: `You are an attendance bot. Students: ${students.map(s=>s.rollNo).join(',')}. RULES: 1. 'Mark all present except 1' -> call markAll(PRESENT) THEN mark(1, ABSENT). 2. 'Mark 1, 2 present' -> call mark(1, PRES), mark(2, PRES).`
+              }
+          });
+          sessionRef.current = session;
+          
+          const source = ctx.createMediaStreamSource(stream);
+          const processor = ctx.createScriptProcessor(4096, 1, 1);
+          processor.onaudioprocess = (e) => {
+              if(!sessionRef.current) return;
+              const data = e.inputBuffer.getChannelData(0);
+              sessionRef.current.sendRealtimeInput({ media: createPcmBlob(data) });
+          };
+          source.connect(processor);
+          processor.connect(ctx.destination);
+
+      } catch(e) { console.error(e); reset(); alert("Connection failed: "+e.message); }
+  };
+
+  const parseCommand = (text) => {
+      const lower = text.toLowerCase();
+      const nums = lower.match(/\d+/g);
+      const isPresent = lower.includes('present');
+      const isAbsent = lower.includes('absent');
+      
+      if((isPresent || isAbsent) && nums) {
+          nums.forEach(n => onLiveUpdateRef.current(n, isPresent ? 'PRESENT' : 'ABSENT'));
+          setMessages(p => [...p, {role: 'ai', text: `(Local) Updated ${nums.join(', ')}`}]);
+      } else if ((isPresent || isAbsent) && lower.includes('all')) {
+          onBulkUpdateRef.current(isPresent ? 'PRESENT' : 'ABSENT');
+          setMessages(p => [...p, {role: 'ai', text: `(Local) Updated All`}]);
+      }
+  };
+
+  return (
+      <div className="fixed inset-0 z-[70] bg-slate-900/95 flex flex-col animate-fade-in">
+          <div className="p-4 flex justify-between items-center text-white bg-slate-800">
+              <div className="flex items-center gap-2 font-bold"><div className={`w-3 h-3 rounded-full ${isConnected?'bg-green-500':'bg-red-500'}`}/>Live Agent</div>
+              <button onClick={onClose}><ChevronDown/></button>
+          </div>
+          <div className="flex-1 p-6 flex flex-col items-center justify-center">
+              <div className={`p-8 rounded-full border-4 mb-8 ${isConnected?'border-green-500 animate-pulse':'border-slate-600'}`}>
+                  <Activity size={64} className="text-white"/>
+              </div>
+              <button onClick={isConnected ? reset : startSession} disabled={isConnecting} className={`px-8 py-4 rounded-full font-bold text-lg flex gap-3 ${isConnected ? 'bg-red-600 text-white' : 'bg-indigo-600 text-white'}`}>
+                  {isConnecting ? <Loader2 className="animate-spin"/> : <Mic/>} {isConnected ? 'Stop' : 'Start Voice'}
+              </button>
+              <div className="mt-8 w-full max-w-md bg-slate-800 p-4 rounded-xl h-48 overflow-y-auto text-sm text-slate-300">
+                  {messages.map((m,i)=><div key={i}><span className="font-bold opacity-50">{m.role}: </span>{m.text}</div>)}
+              </div>
+          </div>
+          <div className="p-4 bg-slate-800 flex gap-2">
+              <input value={textInput} onChange={e=>setTextInput(e.target.value)} placeholder="Type command..." className="flex-1 bg-slate-700 text-white rounded-full px-4 py-2 outline-none"/>
+              <button onClick={()=>{parseCommand(textInput); setTextInput('')}} className="bg-indigo-600 text-white p-2 rounded-full"><Send/></button>
+          </div>
+      </div>
+  )
+}
+
+// 5. Dashboard
+const Dashboard = ({ students, records, currentDate, onSessionChange, currentSession, classes, selectedClassId, onClassChange }) => {
+    const activeRecords = records.filter(r => r.date === currentDate && r.session === currentSession && students.some(s => s.id === r.studentId));
+    const present = activeRecords.filter(r => r.status === AttendanceStatus.PRESENT).length;
+    const absent = activeRecords.filter(r => r.status === AttendanceStatus.ABSENT).length;
+    const total = students.length;
+    const pct = total > 0 ? Math.round((present / total) * 100) : 0;
+    
+    return (
+        <div className="space-y-6 pb-24">
+            <div className="flex justify-between items-center">
+                <div>
+                    <h2 className="text-xl font-bold text-slate-800">Today's Attendance</h2>
+                    <select value={selectedClassId} onChange={e=>onClassChange(e.target.value)} className="text-sm bg-white border rounded p-1 mt-1 font-semibold text-indigo-600 outline-none">{classes.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}</select>
+                </div>
+                <div className="bg-white px-3 py-1 rounded-full text-xs font-bold shadow-sm border text-slate-500">{currentDate}</div>
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+                {[SessionType.FORENOON, SessionType.AFTERNOON].map(sess => {
+                    const isCurr = currentSession === sess;
+                    return (
+                        <div key={sess} onClick={()=>onSessionChange(sess)} className={`p-4 rounded-2xl border bg-white cursor-pointer transition-all ${isCurr ? 'ring-2 ring-indigo-500' : 'hover:border-indigo-300'}`}>
+                            <div className="font-bold text-slate-700 mb-2">{sess === SessionType.FORENOON ? 'FN' : 'AN'}</div>
+                            <div className="h-24 flex items-center justify-center text-3xl font-black text-slate-800">{isCurr ? `${pct}%` : '-'}</div>
+                            <div className="text-center text-xs text-slate-400">{isCurr ? `${absent} Absent` : 'Tap to view'}</div>
+                        </div>
+                    )
+                })}
+            </div>
+            <div className="bg-white p-4 rounded-2xl border shadow-sm h-64">
+                <h3 className="font-bold mb-4">Weekly Trend</h3>
+                <ResponsiveContainer width="100%" height="100%"><BarChart data={[{name:'Mon',v:80},{name:'Tue',v:85},{name:'Wed',v:70},{name:'Thu',v:90},{name:'Fri',v:0}]}><Bar dataKey="v" fill="#818cf8" radius={[4,4,0,0]}/></BarChart></ResponsiveContainer>
+            </div>
+        </div>
+    )
+}
+
+// 6. Media Upload & 7. Search & 8. Profile Modal (Simplified)
+const MediaUpload = ({ onFileUpload, onAnalysisComplete, classes }) => {
+    const [isProcessing, setIsProcessing] = useState(false);
+    const inputRef = useRef(null);
+    const [targetClass, setTargetClass] = useState(classes[0]?.id);
+
+    const handleFile = async (e) => {
+        if(!e.target.files[0]) return;
+        setIsProcessing(true);
+        const file = e.target.files[0];
+        onFileUpload({ id: Math.random().toString(), name: file.name, type: 'document', date: new Date().toDateString(), url: URL.createObjectURL(file) });
+        
+        let results = [];
+        try {
+            if(file.type.includes('image')) results = await analyzeAttendanceImage(file, []);
+            else if(file.type.includes('audio')) results = await analyzeAttendanceAudio(file, []);
+            else if(file.name.endsWith('xlsx')) { /* Simple Excel mock */ results = [{rollNo: '1', status: 'PRESENT'}]; }
+            
+            if(results.length > 0) {
+                if(confirm(`Extracted ${results.length} records. Apply to selected class?`)) {
+                    onAnalysisComplete(results, targetClass, new Date().toDateString(), SessionType.FORENOON);
+                }
+            } else { alert("No data found."); }
+        } catch(err) { alert("Error: " + err.message); }
+        setIsProcessing(false);
+    };
+
+    return (
+        <div className="p-4 space-y-4">
+            <h2 className="text-xl font-bold">Smart Upload</h2>
+            <select value={targetClass} onChange={e=>setTargetClass(e.target.value)} className="w-full p-2 border rounded mb-4">{classes.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}</select>
+            <div onClick={()=>inputRef.current.click()} className="h-40 border-2 border-dashed rounded-2xl flex flex-col items-center justify-center cursor-pointer hover:bg-slate-50">
+                <input type="file" ref={inputRef} hidden onChange={handleFile} />
+                {isProcessing ? <Loader2 className="animate-spin"/> : <Upload size={32} className="text-indigo-600"/>}
+                <span className="text-sm mt-2 text-slate-500">Tap to upload Image, Audio, or Excel</span>
+            </div>
+        </div>
+    )
+}
+
+// --- MAIN APP ---
+const App = () => {
+    const [isAuthenticated, setIsAuthenticated] = useState(true);
+    const [view, setView] = useState('dashboard');
+    const [students, setStudents] = useState(() => JSON.parse(localStorage.getItem('app_students') || '[]'));
+    const [records, setRecords] = useState(() => JSON.parse(localStorage.getItem('app_records') || '[]'));
+    const [classes, setClasses] = useState(() => JSON.parse(localStorage.getItem('app_classes') || '[{"id":"c1","name":"Class 10-A","totalStudents":0}]'));
+    const [files, setFiles] = useState([]);
+    
+    // UI State
+    const [selectedClassId, setSelectedClassId] = useState(classes[0]?.id);
+    const [currentDate, setCurrentDate] = useState(new Date().toDateString());
+    const [currentSession, setCurrentSession] = useState(SessionType.FORENOON);
+    const [isChatOpen, setIsChatOpen] = useState(false);
+    const [showApiKeyModal, setShowApiKeyModal] = useState(!getApiKey());
+
+    useEffect(() => { localStorage.setItem('app_students', JSON.stringify(students)); }, [students]);
+    useEffect(() => { localStorage.setItem('app_records', JSON.stringify(records)); }, [records]);
+    useEffect(() => { localStorage.setItem('app_classes', JSON.stringify(classes)); }, [classes]);
+
+    const handleUpdateStatus = (sid, status, date, session) => {
+        setRecords(prev => {
+            const idx = prev.findIndex(r => r.studentId === sid && r.date === date && r.session === session);
+            if(idx >= 0) { const n = [...prev]; n[idx] = {...n[idx], status}; return n; }
+            return [...prev, {studentId: sid, date, session, status}];
+        });
+    };
+
+    const handleBulk = (status) => {
+        const clsStudents = students.filter(s => s.classId === selectedClassId);
+        setRecords(prev => {
+            const newRecs = [...prev];
+            clsStudents.forEach(s => {
+                const idx = newRecs.findIndex(r => r.studentId === s.id && r.date === currentDate && r.session === currentSession);
+                if(idx >= 0) newRecs[idx].status = status;
+                else newRecs.push({studentId: s.id, date: currentDate, session: currentSession, status});
+            });
+            return newRecs;
+        });
+    };
+
+    const handleLive = (roll, status) => {
+        // Normalize roll
+        const normalizedRoll = String(roll).trim().replace(/^0+/, '');
+        const student = students.find(s => String(s.rollNo).trim() === normalizedRoll && s.classId === selectedClassId);
+        if(student) handleUpdateStatus(student.id, status, currentDate, currentSession);
+    };
+
+    const handleImportClass = (file) => {
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            const data = new Uint8Array(e.target.result);
+            const wb = XLSX.read(data, {type:'array'});
+            const ws = wb.Sheets[wb.SheetNames[0]];
+            const json = XLSX.utils.sheet_to_json(ws, {header:1});
+            
+            // Find header
+            let headerIdx = 0;
+            for(let i=0; i<Math.min(json.length, 20); i++) {
+                const row = json[i].map(c=>String(c).toLowerCase());
+                if(row.some(c=>c.includes('roll') && row.some(c=>c.includes('name')))) { headerIdx = i; break; }
+            }
+            const rows = XLSX.utils.sheet_to_json(ws, {range: headerIdx});
+            const newClassId = Math.random().toString();
+            const newStudents = rows.map((r, i) => ({
+                id: Math.random().toString(), classId: newClassId, 
+                rollNo: String(r['Roll No'] || r['Roll'] || i+1),
+                name: r['Name'] || r['Student Name'] || 'Unknown'
+            }));
+            
+            if(newStudents.length) {
+                setClasses(p => [...p, {id: newClassId, name: file.name.split('.')[0], totalStudents: newStudents.length}]);
+                setStudents(p => [...p, ...newStudents]);
+                setSelectedClassId(newClassId);
+                alert("Imported successfully!");
+            }
+        };
+        reader.readAsArrayBuffer(file);
+    };
+
+    const handleExport = (classId) => {
+        const cls = classes.find(c=>c.id===classId);
+        const clsStudents = students.filter(s=>s.classId===classId);
+        const data = clsStudents.map(s => {
+            const row = {Roll: s.rollNo, Name: s.name};
+            records.filter(r=>r.studentId===s.id).forEach(r => row[`${r.date} ${r.session}`] = r.status);
+            return row;
+        });
+        const ws = XLSX.utils.json_to_sheet(data);
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, "Attendance");
+        XLSX.writeFile(wb, `${cls.name}.xlsx`);
+    }
+
+    // -- RENDER --
+    return (
+        <div className="h-screen flex flex-col lg:flex-row bg-slate-50">
+            <ApiKeyModal isOpen={showApiKeyModal} onClose={()=>setShowApiKeyModal(false)} />
+            
+            {/* Desktop Sidebar */}
+            <div className="hidden lg:flex flex-col w-64 bg-white border-r p-4 gap-2">
+                <div className="font-black text-xl text-indigo-700 p-4">I Rig</div>
+                <button onClick={()=>setView('dashboard')} className={`p-3 text-left rounded-xl font-bold ${view==='dashboard'?'bg-indigo-50 text-indigo-600':'text-slate-500 hover:bg-slate-50'}`}>Dashboard</button>
+                <button onClick={()=>setView('roster')} className={`p-3 text-left rounded-xl font-bold ${view==='roster'?'bg-indigo-50 text-indigo-600':'text-slate-500 hover:bg-slate-50'}`}>Roster</button>
+                <button onClick={()=>setView('media-upload')} className={`p-3 text-left rounded-xl font-bold ${view==='media-upload'?'bg-indigo-50 text-indigo-600':'text-slate-500 hover:bg-slate-50'}`}>Upload</button>
+                <div className="mt-auto">
+                    <button onClick={()=>{if(confirm('Reset Data?')) {localStorage.clear(); window.location.reload()}}} className="p-3 w-full text-red-500 font-bold hover:bg-red-50 rounded-xl">Reset App</button>
+                </div>
+            </div>
+
+            {/* Mobile Header */}
+            <div className="lg:hidden p-4 bg-white border-b flex justify-between items-center sticky top-0 z-30">
+                <div className="font-black text-xl text-indigo-700">I Rig</div>
+                <button onClick={()=>{if(confirm('Reset Data?')) {localStorage.clear(); window.location.reload()}}}><LogOut size={20} className="text-red-500"/></button>
+            </div>
+
+            {/* Main Content */}
+            <div className="flex-1 overflow-auto p-4 max-w-5xl mx-auto w-full">
+                {view === 'dashboard' && <Dashboard students={students} records={records} currentDate={currentDate} currentSession={currentSession} onSessionChange={setCurrentSession} classes={classes} selectedClassId={selectedClassId} onClassChange={setSelectedClassId} />}
+                {view === 'roster' && <StudentTable students={students.filter(s=>s.classId===selectedClassId)} records={records} initialDate={currentDate} initialSession={currentSession} classNameStr={classes.find(c=>c.id===selectedClassId)?.name} classes={classes} selectedClassId={selectedClassId} onSwitchClass={setSelectedClassId} onUpdateStatus={handleUpdateStatus} onUpdateStudent={(id,f,v)=>setStudents(p=>p.map(s=>s.id===id?{...s,[f]:v}:s))} onRenameClass={(n)=>setClasses(p=>p.map(c=>c.id===selectedClassId?{...c,name:n}:c))} onBack={()=>setView('dashboard')} onSave={()=>alert("Saved")} onContextUpdate={(d,s)=>{setCurrentDate(d); setCurrentSession(s)}} />}
+                {view === 'media-upload' && <MediaUpload onFileUpload={f=>setFiles(p=>[f,...p])} onAnalysisComplete={handleAIAnalysisComplete} classes={classes} />}
+            </div>
+
+            {/* Chat Overlay */}
+            {isChatOpen && <LiveAttendance students={students.filter(s=>s.classId===selectedClassId)} onLiveUpdate={handleLive} onBulkUpdate={handleBulk} onClose={()=>setIsChatOpen(false)} />}
+            {!isChatOpen && <button onClick={()=>setIsChatOpen(true)} className="fixed bottom-20 right-4 bg-indigo-600 text-white p-4 rounded-full shadow-xl z-50"><MessageSquare/></button>}
+
+            {/* Bottom Nav */}
+            <div className="lg:hidden fixed bottom-0 left-0 w-full bg-white border-t flex justify-around p-2 z-40">
+                <button onClick={()=>setView('dashboard')} className={`p-2 flex flex-col items-center ${view==='dashboard'?'text-indigo-600':'text-slate-400'}`}><LayoutDashboard size={20}/><span className="text-[10px]">Home</span></button>
+                <button onClick={()=>setView('roster')} className={`p-2 flex flex-col items-center ${view==='roster'?'text-indigo-600':'text-slate-400'}`}><Users size={20}/><span className="text-[10px]">Roster</span></button>
+                <button onClick={()=>setView('media-upload')} className={`p-2 flex flex-col items-center ${view==='media-upload'?'text-indigo-600':'text-slate-400'}`}><Upload size={20}/><span className="text-[10px]">Upload</span></button>
+            </div>
+        </div>
+    )
+}
+
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(<App />);
+    </script>
   </body>
 </html>
