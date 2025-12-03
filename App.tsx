@@ -1,12 +1,11 @@
 
-// ... existing imports ...
 import React, { useState, useEffect } from 'react';
-import { LayoutDashboard, Users, FileInput, Mic, UserCircle, LogOut, MessageSquare } from 'lucide-react';
+import { LayoutDashboard, Users, FileInput, Mic, UserCircle, LogOut, MessageSquare, Search } from 'lucide-react';
 import StudentTable from './components/StudentTable';
 import Dashboard from './components/Dashboard';
 import MediaUpload from './components/MediaUpload';
 import LiveAttendance from './components/LiveAttendance';
-import AuthPage from './components/AuthPage';
+// AuthPage removed as per request
 import BottomNav from './components/BottomNav';
 import ProfileModal from './components/ProfileModal';
 import ClassSelector from './components/ClassSelector';
@@ -14,7 +13,7 @@ import SearchPage from './components/SearchPage';
 import StudentHistory from './components/StudentHistory';
 import { Student, AttendanceRecord, AttendanceStatus, SessionType, ViewMode, AIAnalysisResult, ClassInfo, UploadedFile } from './types';
 
-// ... existing INITIAL_CLASSES, INITIAL_STUDENTS and component setup ...
+// Mock Initial Data (Used only if localStorage is empty)
 const INITIAL_CLASSES: ClassInfo[] = [
     { id: 'c1', name: 'Class 10-A', totalStudents: 15 },
     { id: 'c2', name: 'Class 11-B', totalStudents: 0 },
@@ -27,29 +26,148 @@ const INITIAL_STUDENTS: Student[] = Array.from({ length: 15 }, (_, i) => ({
   rollNo: (i + 1).toString()
 }));
 
+// Components defined locally to avoid creating new files
+const DesktopSidebar: React.FC<{
+  currentView: ViewMode;
+  onNavigate: (view: ViewMode) => void;
+  onOpenProfile: () => void;
+}> = ({ currentView, onNavigate, onOpenProfile }) => {
+  const navItems = [
+    { mode: 'dashboard', icon: LayoutDashboard, label: 'Dashboard' },
+    { mode: 'media-upload', icon: FileInput, label: 'Smart Upload' },
+    { mode: 'roster', icon: Users, label: 'Attendance' },
+    { mode: 'search', icon: Search, label: 'Search' },
+    { mode: 'live-agent', icon: Mic, label: 'AI Agent' },
+  ];
+
+  return (
+    <aside className="hidden lg:flex flex-col w-64 bg-white border-r border-slate-200 h-screen sticky top-0 z-30 transition-all duration-300">
+      <div className="p-6 flex items-center gap-3">
+        <div className="w-8 h-8 bg-indigo-600 rounded-lg flex items-center justify-center shadow-indigo-200 shadow-lg">
+          <span className="text-white font-bold text-lg">I</span>
+        </div>
+        <span className="text-xl font-black text-slate-800 tracking-tight">I Rig</span>
+      </div>
+
+      <nav className="flex-1 px-4 space-y-2 mt-4">
+        {navItems.map((item) => {
+           const Icon = item.icon;
+           const isActive = currentView === item.mode;
+           return (
+             <button
+               key={item.mode}
+               onClick={() => onNavigate(item.mode as ViewMode)}
+               className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all font-medium group ${
+                 isActive 
+                 ? 'bg-indigo-50 text-indigo-600 shadow-sm' 
+                 : 'text-slate-500 hover:bg-slate-50 hover:text-slate-700'
+               }`}
+             >
+               <Icon size={20} className={`transition-transform group-hover:scale-110 ${isActive ? 'text-indigo-600' : 'text-slate-400'}`} />
+               {item.label}
+             </button>
+           );
+        })}
+      </nav>
+
+      <div className="p-4 mt-auto">
+        <button 
+          onClick={onOpenProfile}
+          className="w-full flex items-center gap-3 p-3 rounded-xl bg-slate-50 hover:bg-slate-100 transition-colors border border-slate-100 group"
+        >
+          <div className="w-10 h-10 bg-white rounded-full flex items-center justify-center text-indigo-600 shadow-sm group-hover:scale-105 transition-transform">
+            <UserCircle size={24} />
+          </div>
+          <div className="text-left">
+            <p className="text-sm font-bold text-slate-700 group-hover:text-indigo-600 transition-colors">My Profile</p>
+            <p className="text-xs text-slate-400">Settings</p>
+          </div>
+        </button>
+      </div>
+    </aside>
+  );
+};
+
+const MobileHeader: React.FC<{ onOpenProfile: () => void }> = ({ onOpenProfile }) => {
+  return (
+    <header className="lg:hidden bg-white/80 backdrop-blur-md border-b border-slate-200 p-4 sticky top-0 z-40 flex justify-between items-center shadow-sm">
+      <div className="flex items-center gap-2">
+         <div className="w-8 h-8 bg-indigo-600 rounded-lg flex items-center justify-center">
+            <span className="text-white font-bold text-lg">I</span>
+         </div>
+         <span className="text-xl font-black text-slate-800 tracking-tight">I Rig</span>
+      </div>
+      <button onClick={onOpenProfile} className="p-2 bg-slate-50 rounded-full hover:bg-slate-100 text-slate-600 transition-colors">
+         <UserCircle size={24} />
+      </button>
+    </header>
+  );
+};
+
 const App: React.FC = () => {
-  // ... state declarations ...
-  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  // Auth State - Default to true to bypass login
+  const [isAuthenticated, setIsAuthenticated] = useState(true);
+
+  // App State - Initialize from LocalStorage safely
   const [view, setView] = useState<ViewMode>('dashboard');
-  const [students, setStudents] = useState<Student[]>(INITIAL_STUDENTS);
-  const [records, setRecords] = useState<AttendanceRecord[]>([]);
-  const [teacherName, setTeacherName] = useState("Mr. Anderson");
-  const [classes, setClasses] = useState<ClassInfo[]>(INITIAL_CLASSES);
-  const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([]);
+  
+  const [students, setStudents] = useState<Student[]>(() => {
+      try {
+          const saved = localStorage.getItem('app_students');
+          return saved ? JSON.parse(saved) : INITIAL_STUDENTS;
+      } catch { return INITIAL_STUDENTS; }
+  });
+
+  const [records, setRecords] = useState<AttendanceRecord[]>(() => {
+      try {
+          const saved = localStorage.getItem('app_records');
+          return saved ? JSON.parse(saved) : [];
+      } catch { return []; }
+  });
+  
+  const [teacherName, setTeacherName] = useState(() => localStorage.getItem('app_teacherName') || "Mr. Anderson");
+  
+  const [classes, setClasses] = useState<ClassInfo[]>(() => {
+      try {
+          const saved = localStorage.getItem('app_classes');
+          return saved ? JSON.parse(saved) : INITIAL_CLASSES;
+      } catch { return INITIAL_CLASSES; }
+  });
+
+  const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>(() => {
+      try {
+          const saved = localStorage.getItem('app_files');
+          return saved ? JSON.parse(saved) : [];
+      } catch { return []; }
+  });
+
+  // Persistence Effects
+  useEffect(() => localStorage.setItem('app_students', JSON.stringify(students)), [students]);
+  useEffect(() => localStorage.setItem('app_records', JSON.stringify(records)), [records]);
+  useEffect(() => localStorage.setItem('app_classes', JSON.stringify(classes)), [classes]);
+  useEffect(() => localStorage.setItem('app_files', JSON.stringify(uploadedFiles)), [uploadedFiles]);
+  useEffect(() => localStorage.setItem('app_teacherName', teacherName), [teacherName]);
+
+  // Class Selection State
   const [selectedClass, setSelectedClass] = useState<{id: string, name: string} | null>(null);
-  const [dashboardClassId, setDashboardClassId] = useState<string>(INITIAL_CLASSES[0]?.id || '');
+  const [dashboardClassId, setDashboardClassId] = useState<string>(classes[0]?.id || '');
+  
   const [currentDate, setCurrentDate] = useState<string>(new Date().toDateString());
   const [currentSession, setCurrentSession] = useState<SessionType>(
     new Date().getHours() < 12 ? SessionType.FORENOON : SessionType.AFTERNOON
   );
+  
+  // Student Detail State
   const [selectedStudent, setSelectedStudent] = useState<Student | null>(null);
+
+  // UI State
   const [isProfileOpen, setIsProfileOpen] = useState(false);
   const [isChatOverlayOpen, setIsChatOverlayOpen] = useState(false);
   const [hasChatStarted, setHasChatStarted] = useState(false);
 
-  // ... existing useEffects and handlers ...
+  // Initialize demo records if empty
   useEffect(() => {
-    if (records.length === 0 && isAuthenticated) {
+    if (records.length === 0) {
       const demoRecords: AttendanceRecord[] = students.map(s => ({
         studentId: s.id,
         date: new Date().toDateString(),
@@ -58,8 +176,9 @@ const App: React.FC = () => {
       }));
       setRecords(demoRecords);
     }
-  }, [isAuthenticated, records.length, students]);
+  }, []);
 
+  // Ensure dashboard class ID is valid
   useEffect(() => {
       if (classes.length > 0 && !classes.find(c => c.id === dashboardClassId)) {
           setDashboardClassId(classes[0].id);
@@ -68,8 +187,21 @@ const App: React.FC = () => {
 
   // Handlers
   const handleLogin = () => setIsAuthenticated(true);
-  const handleLogout = () => { setIsAuthenticated(false); goHome(); setIsChatOverlayOpen(false); setHasChatStarted(false); };
-  const goHome = () => { setView('dashboard'); setSelectedClass(null); setSelectedStudent(null); setCurrentDate(new Date().toDateString()); };
+  
+  const handleLogout = () => {
+    // Acts as Reset Data
+    if (window.confirm("This will reset all app data. Are you sure?")) {
+        localStorage.clear();
+        window.location.reload();
+    }
+  };
+
+  const goHome = () => {
+    setView('dashboard');
+    setSelectedClass(null);
+    setSelectedStudent(null);
+    setCurrentDate(new Date().toDateString());
+  };
 
   const handleUpdateStatus = (studentId: string, status: AttendanceStatus, date?: string, session?: SessionType) => {
     const targetDate = date || currentDate;
@@ -87,20 +219,31 @@ const App: React.FC = () => {
   };
 
   const handleBulkUpdateStatus = (status: AttendanceStatus) => {
+      // Determine the active class context based on View
       const targetClassId = (selectedClass && selectedClass.id) || dashboardClassId || classes[0]?.id;
-      if (!targetClassId) { console.warn("No target class"); return; }
+      
+      if (!targetClassId) return;
 
       setRecords(prev => {
           const currentClassStudents = students.filter(s => s.classId === targetClassId);
           const newRecords = [...prev];
-          let updatedCount = 0;
+          
+          let count = 0;
           currentClassStudents.forEach(student => {
               const existingIdx = newRecords.findIndex(r => r.studentId === student.id && r.date === currentDate && r.session === currentSession);
-              if (existingIdx >= 0) { newRecords[existingIdx] = { ...newRecords[existingIdx], status }; } 
-              else { newRecords.push({ studentId: student.id, date: currentDate, session: currentSession, status }); }
-              updatedCount++;
+              if (existingIdx >= 0) {
+                  newRecords[existingIdx] = { ...newRecords[existingIdx], status };
+              } else {
+                  newRecords.push({
+                      studentId: student.id,
+                      date: currentDate,
+                      session: currentSession,
+                      status
+                  });
+              }
+              count++;
           });
-          if(updatedCount > 0) alert(`Bulk update: Marked ${updatedCount} students as ${status}`);
+          console.log(`Bulk updated ${count} students to ${status}`);
           return newRecords;
       });
   };
@@ -116,67 +259,154 @@ const App: React.FC = () => {
     setRecords(prevRecords => {
         const newRecords = [...prevRecords];
         const classStudents = students.filter(s => s.classId === targetClassId);
+        
         let matchCount = 0;
         results.forEach(res => {
+            // Strict normalization: remove all non-alphanumeric, lowercase
             const resRoll = String(res.rollNo).replace(/[^0-9a-zA-Z]/g, '').toLowerCase();
+            
             const student = classStudents.find(s => {
                 const sRoll = String(s.rollNo).replace(/[^0-9a-zA-Z]/g, '').toLowerCase();
                 return sRoll === resRoll;
             });
+
             if (student) {
                  const existingIdx = newRecords.findIndex(r => r.studentId === student.id && r.date === date && r.session === session);
                  const status = (res.status || 'PRESENT').toUpperCase() as AttendanceStatus;
-                 const newRecord: AttendanceRecord = { studentId: student.id, date: date, session: session, status: status };
-                 if (existingIdx >= 0) newRecords[existingIdx] = newRecord;
-                 else newRecords.push(newRecord);
+                 
+                 const newRecord: AttendanceRecord = {
+                     studentId: student.id,
+                     date: date,
+                     session: session,
+                     status: status
+                 };
+                 
+                 if (existingIdx >= 0) {
+                     newRecords[existingIdx] = newRecord;
+                 } else {
+                     newRecords.push(newRecord);
+                 }
                  matchCount++;
             }
         });
-        if (matchCount > 0) setTimeout(() => alert(`Updated ${matchCount} students in ${targetClass.name}.`), 200);
-        else setTimeout(() => alert(`No matches found in ${targetClass.name}.`), 200);
+        
+        // Use timeout to allow UI render cycle to complete before alert
+        setTimeout(() => alert(`Successfully updated ${matchCount} records in ${targetClass.name}.`), 100);
         return newRecords;
     });
     setView('roster'); 
   };
 
   const handleLiveUpdate = (rollNo: string, status: AttendanceStatus) => {
+      // 1. Identify Target Class: Dashboard or Roster?
       let targetClassId = selectedClass?.id;
       if (view === 'dashboard') targetClassId = dashboardClassId;
-      if (!targetClassId && classes.length > 0) targetClassId = classes[0].id;
+      if (!targetClassId && classes.length > 0) targetClassId = classes[0].id; // Fallback
+
       if (!targetClassId) return;
 
-      const normalizedRoll = String(rollNo).trim();
-      const student = students.find(s => String(s.rollNo).trim() === normalizedRoll && s.classId === targetClassId);
+      // 2. Find Student in that Class
+      // Normalize input: remove leading zeros, whitespace, etc for robust matching
+      const normalizedInput = String(rollNo).trim().toLowerCase().replace(/^0+/, '');
+      
+      const student = students.find(s => {
+          const sRoll = String(s.rollNo).trim().toLowerCase().replace(/^0+/, '');
+          return sRoll === normalizedInput && s.classId === targetClassId;
+      });
       
       if (student) {
           handleUpdateStatus(student.id, status, currentDate, currentSession); 
-          console.log(`Live Update: ${student.name} -> ${status}`);
       } else {
-          const studentFuzzy = students.find(s => parseInt(s.rollNo) === parseInt(normalizedRoll) && s.classId === targetClassId);
-          if (studentFuzzy) handleUpdateStatus(studentFuzzy.id, status, currentDate, currentSession);
-          else console.warn(`Student ${rollNo} not found`);
+          console.warn(`Student with Roll ${rollNo} not found in class ${targetClassId}`);
       }
   };
 
   const handleClassSelection = (classId: string, date: string, session: SessionType) => {
       const cls = classes.find(c => c.id === classId);
-      if (cls) { setSelectedClass({ id: cls.id, name: cls.name }); setCurrentDate(date); setCurrentSession(session); }
+      if (cls) {
+          setSelectedClass({ id: cls.id, name: cls.name });
+          setCurrentDate(date);
+          setCurrentSession(session);
+      }
   };
-  const handleSwitchClass = (classId: string) => { const cls = classes.find(c => c.id === classId); if (cls) setSelectedClass({ id: cls.id, name: cls.name }); };
-  const handleContextUpdate = (date: string, session: SessionType) => { setCurrentDate(date); setCurrentSession(session); };
-  const handleNavigate = (newView: ViewMode) => { 
-      if (newView === 'live-agent') { setIsChatOverlayOpen(true); setHasChatStarted(true); return; } 
-      if (newView === 'roster') { if (!selectedClass) setSelectedClass(null); } 
-      setView(newView); setIsChatOverlayOpen(false); 
+
+  const handleSwitchClass = (classId: string) => {
+      const cls = classes.find(c => c.id === classId);
+      if (cls) {
+          setSelectedClass({ id: cls.id, name: cls.name });
+      }
   };
-  const handleEditSessionFromDashboard = (session: SessionType) => { setCurrentSession(session); if (!selectedClass && classes.length > 0) { const clsToSelect = classes.find(c => c.id === dashboardClassId) || classes[0]; setSelectedClass({ id: clsToSelect.id, name: clsToSelect.name }); } setView('roster'); };
-  const handleStudentClick = (student: Student) => { setSelectedStudent(student); setView('student-history'); };
-  const handleSaveAttendance = () => { alert("Attendance Saved! Redirecting to Home..."); goHome(); };
-  const handleViewClassFromProfile = (classId: string) => { const cls = classes.find(c => c.id === classId); if (cls) { setSelectedClass({ id: cls.id, name: cls.name }); setView('roster'); setIsProfileOpen(false); } };
-  const handleAddClass = (name: string) => { setClasses(prev => [...prev, { id: Math.random().toString(), name, totalStudents: 0 }]); };
-  const handleRenameClass = (newName: string, classId?: string) => { const targetId = classId || selectedClass?.id; if (targetId) { setClasses(prev => prev.map(c => c.id === targetId ? { ...c, name: newName } : c)); if (selectedClass && selectedClass.id === targetId) setSelectedClass(prev => prev ? { ...prev, name: newName } : null); } };
-  const handleDeleteClass = (id: string) => { setClasses(prev => prev.filter(c => c.id !== id)); setStudents(prev => prev.filter(s => s.classId !== id)); if (selectedClass?.id === id) { setSelectedClass(null); setView('dashboard'); } };
+
+  const handleContextUpdate = (date: string, session: SessionType) => {
+      setCurrentDate(date);
+      setCurrentSession(session);
+  };
+
+  const handleNavigate = (newView: ViewMode) => {
+      if (newView === 'live-agent') {
+          setIsChatOverlayOpen(true);
+          setHasChatStarted(true);
+          return;
+      }
+      if (newView === 'roster') {
+          if (!selectedClass) setSelectedClass(null);
+      }
+      setView(newView);
+      setIsChatOverlayOpen(false); 
+  };
   
+  const handleEditSessionFromDashboard = (session: SessionType) => {
+      setCurrentSession(session);
+      if (!selectedClass && classes.length > 0) {
+          const clsToSelect = classes.find(c => c.id === dashboardClassId) || classes[0];
+          setSelectedClass({ id: clsToSelect.id, name: clsToSelect.name });
+      }
+      setView('roster');
+  };
+
+  const handleStudentClick = (student: Student) => {
+      setSelectedStudent(student);
+      setView('student-history');
+  };
+
+  const handleSaveAttendance = () => {
+      alert("Attendance Saved! Redirecting to Home...");
+      goHome();
+  };
+
+  const handleViewClassFromProfile = (classId: string) => {
+      const cls = classes.find(c => c.id === classId);
+      if (cls) {
+          setSelectedClass({ id: cls.id, name: cls.name });
+          setView('roster');
+          setIsProfileOpen(false);
+      }
+  };
+
+  const handleAddClass = (name: string) => {
+      setClasses(prev => [...prev, { id: Math.random().toString(), name, totalStudents: 0 }]);
+  };
+
+  const handleRenameClass = (newName: string, classId?: string) => {
+      const targetId = classId || selectedClass?.id;
+      if (targetId) {
+          setClasses(prev => prev.map(c => c.id === targetId ? { ...c, name: newName } : c));
+          if (selectedClass && selectedClass.id === targetId) {
+              setSelectedClass(prev => prev ? { ...prev, name: newName } : null);
+          }
+      }
+  };
+
+  const handleDeleteClass = (id: string) => {
+     setClasses(prev => prev.filter(c => c.id !== id));
+     setStudents(prev => prev.filter(s => s.classId !== id));
+     
+     if (selectedClass?.id === id) {
+         setSelectedClass(null);
+         setView('dashboard');
+     }
+  };
+
   const handleImportClass = async (file: File) => {
       const reader = new FileReader();
       reader.onload = (e) => {
@@ -188,37 +418,67 @@ const App: React.FC = () => {
                   const sheetName = workbook.SheetNames[0];
                   const sheet = workbook.Sheets[sheetName];
                   const rawData = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
+                  
                   let headerRowIndex = 0;
                   if (rawData.length > 0) {
                       for(let i=0; i<Math.min(20, rawData.length); i++) {
                           const row = (rawData[i] as any[]).map(c => String(c).toLowerCase());
-                          if (row.some(c => c.includes('roll') || c.includes('id') || c.includes('no')) && row.some(c => c.includes('name') || c.includes('student'))) { headerRowIndex = i; break; }
+                          if (row.some(c => c.includes('roll') || c.includes('id') || c.includes('no')) && row.some(c => c.includes('name') || c.includes('student'))) {
+                              headerRowIndex = i;
+                              break;
+                          }
                       }
                   }
+
                   const jsonData = XLSX.utils.sheet_to_json(sheet, { range: headerRowIndex });
                   const newClassId = Math.random().toString();
                   const newClassName = file.name.split('.')[0] || "Imported Class";
                   const newStudents: Student[] = [];
+                  
                   jsonData.forEach((row: any, index: number) => {
                       const keys = Object.keys(row);
                       const rollKey = keys.find(k => /roll|id|no/i.test(k));
                       const nameKey = keys.find(k => /name|student/i.test(k) && !/roll|id|no/i.test(k));
+                      
                       const rollNo = rollKey ? row[rollKey] : (index + 1).toString();
                       const name = nameKey ? row[nameKey] : "Unknown";
+                      
                       if (name && name !== "Unknown" && String(rollNo).trim() !== '') {
-                          newStudents.push({ id: `s-${Date.now()}-${index}`, classId: newClassId, name: String(name), rollNo: String(rollNo).trim() });
+                          newStudents.push({
+                              id: `s-${Date.now()}-${index}`,
+                              classId: newClassId,
+                              name: String(name),
+                              rollNo: String(rollNo).trim()
+                          });
                       }
                   });
+
                   if (newStudents.length > 0) {
-                      const newClass: ClassInfo = { id: newClassId, name: newClassName, totalStudents: newStudents.length };
+                      const newClass: ClassInfo = {
+                          id: newClassId,
+                          name: newClassName,
+                          totalStudents: newStudents.length
+                      };
                       setClasses(prev => [...prev, newClass]);
                       setStudents(prev => [...prev, ...newStudents]);
+                      
                       const blobUrl = URL.createObjectURL(file);
-                      const uploadedFile: UploadedFile = { id: Math.random().toString(), name: file.name, type: 'document', date: new Date().toDateString(), size: (file.size / 1024).toFixed(1) + ' KB', url: blobUrl };
+                      const uploadedFile: UploadedFile = {
+                          id: Math.random().toString(),
+                          name: file.name,
+                          type: 'document',
+                          date: new Date().toDateString(),
+                          size: (file.size / 1024).toFixed(1) + ' KB',
+                          url: blobUrl
+                      };
                       setUploadedFiles(prev => [uploadedFile, ...prev]);
                       alert(`Imported ${newStudents.length} students into '${newClassName}'`);
-                  } else { alert("Could not find valid student data."); }
-              } else { alert("Excel parser not loaded."); }
+                  } else {
+                      alert("Could not find valid student data (Name, Roll No) in the Excel file.");
+                  }
+              } else {
+                  alert("Excel parser library not loaded. Please refresh.");
+              }
           }
       };
       reader.readAsArrayBuffer(file);
@@ -227,13 +487,29 @@ const App: React.FC = () => {
   const handleExportClass = (classId: string) => {
       const cls = classes.find(c => c.id === classId);
       if (!cls) return;
+      
       const classStudents = students.filter(s => s.classId === classId);
+      
+      // Pivot data: Students as rows, Date/Session as columns
       const exportData = classStudents.map(student => {
-          const row: any = { 'Roll No': student.rollNo, 'Name': student.name };
+          const row: any = {
+              'Roll No': student.rollNo,
+              'Name': student.name
+          };
+          
+          // Get all records for this student
           const studentRecords = records.filter(r => r.studentId === student.id);
-          studentRecords.forEach(r => { const key = `${r.date} (${r.session === SessionType.FORENOON ? 'FN' : 'AN'})`; row[key] = r.status; });
+          
+          // Flatten records into columns
+          studentRecords.forEach(r => {
+              const sessionLabel = r.session === SessionType.FORENOON ? 'FN' : 'AN';
+              const key = `${r.date} (${sessionLabel})`;
+              row[key] = r.status;
+          });
+          
           return row;
       });
+
       const XLSX = (window as any).XLSX;
       if (XLSX) {
           const ws = XLSX.utils.json_to_sheet(exportData);
@@ -243,58 +519,70 @@ const App: React.FC = () => {
       }
   };
 
-  const handleUpdateStudent = (studentId: string, field: 'name' | 'rollNo', value: string) => { setStudents(prev => prev.map(s => s.id === studentId ? { ...s, [field]: value } : s)); };
-  const handleFileUpload = (file: UploadedFile) => { setUploadedFiles(prev => [file, ...prev]); };
-  const handleDeleteFile = (fileId: string) => { setUploadedFiles(prev => prev.filter(f => f.id !== fileId)); };
-  const handleUpdateFile = (updatedFile: UploadedFile) => { setUploadedFiles(prev => prev.map(f => f.id === updatedFile.id ? updatedFile : f)); };
+  const handleUpdateStudent = (studentId: string, field: 'name' | 'rollNo', value: string) => {
+      setStudents(prev => prev.map(s => s.id === studentId ? { ...s, [field]: value } : s));
+  };
 
+  const handleFileUpload = (file: UploadedFile) => {
+      setUploadedFiles(prev => [file, ...prev]);
+  };
+
+  const handleDeleteFile = (fileId: string) => {
+      setUploadedFiles(prev => prev.filter(f => f.id !== fileId));
+  };
+
+  const handleUpdateFile = (updatedFile: UploadedFile) => {
+      setUploadedFiles(prev => prev.map(f => f.id === updatedFile.id ? updatedFile : f));
+  };
+
+  // Determine active students based on view
   const activeClassId = view === 'dashboard' ? dashboardClassId : selectedClass?.id;
   const activeStudents = students.filter(s => s.classId === activeClassId);
   const dashboardStudents = students.filter(s => s.classId === dashboardClassId);
 
-  if (!isAuthenticated) return <AuthPage onLogin={handleLogin} />;
-
-  const MobileHeader = () => (
-    <div className="bg-white p-4 pb-2 border-b border-slate-100 flex justify-between items-center lg:hidden sticky top-0 z-30">
-        <div onClick={goHome} className="cursor-pointer">
-            <h1 className="text-xl font-black text-indigo-700 tracking-tight">I Rig</h1>
-            <p className="text-xs text-slate-500 font-medium">AI powered attendance</p>
-        </div>
-        <div className="flex items-center gap-3">
-             <button onClick={() => setIsProfileOpen(true)} className="w-9 h-9 bg-slate-200 rounded-full flex items-center justify-center overflow-hidden border border-slate-300 active:scale-95 transition-transform"><UserCircle className="text-slate-500" size={36} /></button>
-        </div>
-    </div>
-  );
-
-  const DesktopSidebar = () => (
-      <aside className="hidden lg:flex flex-col w-64 bg-white border-r border-slate-200 h-screen sticky top-0 z-40">
-        <div className="p-6 border-b border-slate-100 cursor-pointer" onClick={goHome}>
-           <div className="flex items-center gap-2 text-indigo-700 font-bold text-xl"><Users size={28} /><span>I Rig</span></div>
-           <p className="text-xs text-slate-400 mt-1">AI powered attendance</p>
-        </div>
-        <nav className="flex-1 p-4 space-y-1">
-          <button onClick={() => handleNavigate('dashboard')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-all ${view === 'dashboard' ? 'bg-indigo-50 text-indigo-600 font-bold' : 'text-slate-600 hover:bg-slate-50'}`}><LayoutDashboard size={20} /> Dashboard</button>
-          <button onClick={() => handleNavigate('roster')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-all ${view === 'roster' ? 'bg-indigo-50 text-indigo-600 font-bold' : 'text-slate-600 hover:bg-slate-50'}`}><Users size={20} /> Class Roster</button>
-          <button onClick={() => handleNavigate('media-upload')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-all ${view === 'media-upload' ? 'bg-indigo-50 text-indigo-600 font-bold' : 'text-slate-600 hover:bg-slate-50'}`}><FileInput size={20} /> Upload Media</button>
-          <button onClick={() => handleNavigate('search')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-all ${view === 'search' ? 'bg-indigo-50 text-indigo-600 font-bold' : 'text-slate-600 hover:bg-slate-50'}`}><Users size={20} /> Search</button>
-        </nav>
-        <div className="p-4 border-t border-slate-100">
-           <button onClick={() => setIsProfileOpen(true)} className="w-full flex items-center gap-3 p-3 bg-slate-50 rounded-lg hover:bg-slate-100 transition-colors"><UserCircle size={32} className="text-slate-400"/><div className="flex-1 overflow-hidden text-left"><p className="text-sm font-semibold text-slate-700 truncate">{teacherName}</p><p className="text-xs text-slate-500 truncate">View Profile</p></div></button>
-           <button onClick={handleLogout} className="w-full flex items-center justify-center gap-2 mt-2 text-xs text-slate-400 hover:text-red-500 py-2"><LogOut size={14} /> Logout</button>
-        </div>
-      </aside>
-  );
-
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col lg:flex-row">
-      <DesktopSidebar />
+      <DesktopSidebar currentView={view} onNavigate={handleNavigate} onOpenProfile={() => setIsProfileOpen(true)} />
       <main className="flex-1 flex flex-col min-w-0 h-screen overflow-hidden relative">
-        <MobileHeader />
+        <MobileHeader onOpenProfile={() => setIsProfileOpen(true)} />
         <div className="flex-1 overflow-auto p-4 md:p-8 scroll-smooth">
             <div className="max-w-5xl mx-auto h-full flex flex-col">
                 <div className="flex-1 min-h-0">
-                    {view === 'dashboard' && <Dashboard students={dashboardStudents} records={records} currentDate={currentDate} currentSession={currentSession} onSessionChange={setCurrentSession} onEditSession={handleEditSessionFromDashboard} classes={classes} selectedClassId={dashboardClassId} onClassChange={setDashboardClassId} />}
-                    {view === 'roster' && (!selectedClass ? <ClassSelector classes={classes} onSelect={handleClassSelection} /> : <StudentTable students={activeStudents} records={records} initialDate={currentDate} initialSession={currentSession} classNameStr={selectedClass.name} classes={classes} selectedClassId={selectedClass.id} onSwitchClass={handleSwitchClass} onUpdateStatus={handleUpdateStatus} onUpdateStudent={handleUpdateStudent} onRenameClass={handleRenameClass} onBack={() => setSelectedClass(null)} onSave={handleSaveAttendance} onContextUpdate={handleContextUpdate} />)}
+                    {view === 'dashboard' && (
+                        <Dashboard 
+                            students={dashboardStudents} 
+                            records={records} 
+                            currentDate={currentDate}
+                            currentSession={currentSession}
+                            onSessionChange={setCurrentSession}
+                            onEditSession={handleEditSessionFromDashboard}
+                            classes={classes}
+                            selectedClassId={dashboardClassId}
+                            onClassChange={setDashboardClassId}
+                        />
+                    )}
+                    {view === 'roster' && (
+                        !selectedClass ? (
+                            <ClassSelector classes={classes} onSelect={handleClassSelection} />
+                        ) : (
+                            <StudentTable 
+                                students={activeStudents} 
+                                records={records}
+                                initialDate={currentDate}
+                                initialSession={currentSession}
+                                classNameStr={selectedClass.name}
+                                classes={classes}
+                                selectedClassId={selectedClass.id}
+                                onSwitchClass={handleSwitchClass}
+                                onUpdateStatus={handleUpdateStatus}
+                                onUpdateStudent={handleUpdateStudent}
+                                onRenameClass={handleRenameClass}
+                                onBack={() => setSelectedClass(null)}
+                                onSave={handleSaveAttendance}
+                                onContextUpdate={handleContextUpdate}
+                            />
+                        )
+                    )}
                     {view === 'media-upload' && <MediaUpload students={activeStudents} classes={classes} onAnalysisComplete={handleAIAnalysisComplete} onFileUpload={handleFileUpload}/>}
                     {view === 'search' && <SearchPage classes={classes} files={uploadedFiles} students={students} onOpenClass={handleViewClassFromProfile} onStudentClick={handleStudentClick} onDeleteFile={handleDeleteFile} onUpdateFile={handleUpdateFile} onImportClass={handleImportClass} onDeleteClass={handleDeleteClass}/>}
                     {view === 'student-history' && selectedStudent && <StudentHistory student={selectedStudent} records={records} onBack={() => setView('search')} />}
@@ -307,7 +595,9 @@ const App: React.FC = () => {
             </button>
         )}
         <div className={`${isChatOverlayOpen ? 'block' : 'hidden'} fixed inset-0 z-[70]`}>
-             {hasChatStarted && <LiveAttendance students={activeStudents} onLiveUpdate={handleLiveUpdate} onBulkUpdate={handleBulkUpdateStatus} onClose={() => setIsChatOverlayOpen(false)} />}
+             {hasChatStarted && (
+                <LiveAttendance students={activeStudents} onLiveUpdate={handleLiveUpdate} onBulkUpdate={handleBulkUpdateStatus} onClose={() => setIsChatOverlayOpen(false)} />
+             )}
         </div>
         <BottomNav currentView={view} onNavigate={handleNavigate} />
         <ProfileModal 
@@ -324,7 +614,7 @@ const App: React.FC = () => {
             students={students} 
             records={records}
             onExportClass={handleExportClass}
-            onLogout={handleLogout} // Pass the handler
+            onLogout={handleLogout}
         />
       </main>
     </div>

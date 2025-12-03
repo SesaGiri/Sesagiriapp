@@ -17,7 +17,7 @@ interface ProfileModalProps {
     onExportClass: (classId: string) => void;
     students: Student[];
     records: AttendanceRecord[];
-    onLogout: () => void;
+    onLogout: () => void; // Added logout handler
 }
 
 const ProfileModal: React.FC<ProfileModalProps> = ({ 
@@ -83,7 +83,7 @@ const ProfileModal: React.FC<ProfileModalProps> = ({
                   </div>
                   
                   <div className="p-6 overflow-y-auto flex-1 space-y-6">
-                      {/* About Me Section */}
+                      {/* About Me Section (Static for now, could be editable) */}
                       <div>
                           <h3 className="text-sm font-bold text-slate-500 uppercase tracking-wider mb-2">About Me</h3>
                           <div className="p-4 bg-slate-50 border border-slate-100 rounded-xl text-sm text-slate-600 italic">

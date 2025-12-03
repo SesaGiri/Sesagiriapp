@@ -2,8 +2,31 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import { AIAnalysisResult, AttendanceStatus, Student } from "../types";
 
-const apiKey = process.env.API_KEY || '';
-// Initialize but don't fail immediately, fail on usage if key is missing
+// Helper to safely get API Key without crashing in browser environments
+const getApiKey = () => {
+  try {
+    // Check local storage first (user setting)
+    const localKey = localStorage.getItem('gemini_api_key');
+    if (localKey) return localKey;
+
+    // Check Vite/Modern env
+    // @ts-ignore
+    if (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_API_KEY) {
+      // @ts-ignore
+      return import.meta.env.VITE_API_KEY;
+    }
+
+    // Check Legacy/Node env (careful check to avoid ReferenceError)
+    if (typeof process !== 'undefined' && process.env && process.env.API_KEY) {
+      return process.env.API_KEY;
+    }
+  } catch (e) {
+    // Ignore errors during key retrieval
+  }
+  return '';
+};
+
+const apiKey = getApiKey();
 const ai = new GoogleGenAI({ apiKey });
 
 /**
@@ -194,7 +217,8 @@ export const analyzeAttendanceText = async (
  */
 export const getGeminiLiveClient = () => {
     if (!apiKey) {
-        throw new Error("API Key is missing or invalid. Please check your environment variables.");
+        // Return a dummy client or throw a clearer error that the UI can catch
+        console.warn("API Key missing. Live features will fail.");
     }
     return ai;
 }
