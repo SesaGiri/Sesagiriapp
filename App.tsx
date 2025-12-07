@@ -218,9 +218,15 @@ const App: React.FC = () => {
     });
   };
 
-  const handleBulkUpdateStatus = (status: AttendanceStatus) => {
-      // Determine the active class context based on View
-      const targetClassId = (selectedClass && selectedClass.id) || dashboardClassId || classes[0]?.id;
+  const handleBulkUpdateStatus = (status: AttendanceStatus, targetName?: string) => {
+      // Determine the active class context
+      let targetClassId = (selectedClass && selectedClass.id) || dashboardClassId || classes[0]?.id;
+
+      // AI Override
+      if (targetName) {
+          const match = classes.find(c => c.name.toLowerCase().includes(targetName.toLowerCase()));
+          if (match) targetClassId = match.id;
+      }
       
       if (!targetClassId) return;
 
@@ -243,7 +249,7 @@ const App: React.FC = () => {
               }
               count++;
           });
-          console.log(`Bulk updated ${count} students to ${status}`);
+          console.log(`Bulk updated ${count} students to ${status} in ${targetClassId}`);
           return newRecords;
       });
   };
@@ -297,10 +303,27 @@ const App: React.FC = () => {
     setView('roster'); 
   };
 
-  const handleLiveUpdate = (rollNo: string, status: AttendanceStatus) => {
+  const handleLiveUpdate = (rollNo: string, status: AttendanceStatus, targetName?: string) => {
       // 1. Identify Target Class: Dashboard or Roster?
       let targetClassId = selectedClass?.id;
-      if (view === 'dashboard') targetClassId = dashboardClassId;
+
+      // AI Override for Target
+      if (targetName) {
+        const match = classes.find(c => c.name.toLowerCase().includes(targetName.toLowerCase()));
+        if (match) {
+            targetClassId = match.id;
+            // Optionally auto-select/navigate to that class to show updates live
+            if (selectedClass?.id !== match.id) {
+               setSelectedClass({ id: match.id, name: match.name });
+               // If in dashboard, maybe don't force nav, but if in roster, yes.
+               if (view === 'roster') {
+                   // already there
+               }
+            }
+        }
+      }
+
+      if (view === 'dashboard' && !targetClassId) targetClassId = dashboardClassId;
       if (!targetClassId && classes.length > 0) targetClassId = classes[0].id; // Fallback
 
       if (!targetClassId) return;
@@ -596,7 +619,16 @@ const App: React.FC = () => {
         )}
         <div className={`${isChatOverlayOpen ? 'block' : 'hidden'} fixed inset-0 z-[70]`}>
              {hasChatStarted && (
-                <LiveAttendance students={activeStudents} onLiveUpdate={handleLiveUpdate} onBulkUpdate={handleBulkUpdateStatus} onClose={() => setIsChatOverlayOpen(false)} />
+                <LiveAttendance 
+                    students={activeStudents} 
+                    files={uploadedFiles}
+                    classes={classes}
+                    onLiveUpdate={handleLiveUpdate} 
+                    onBulkUpdate={handleBulkUpdateStatus} 
+                    onUpdateFile={handleUpdateFile}
+                    onDeleteFile={handleDeleteFile}
+                    onClose={() => setIsChatOverlayOpen(false)} 
+                />
              )}
         </div>
         <BottomNav currentView={view} onNavigate={handleNavigate} />

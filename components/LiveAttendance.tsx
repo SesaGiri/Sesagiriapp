@@ -3,13 +3,17 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Mic, Video, VideoOff, Activity, XCircle, Send, ChevronDown, AlertCircle, Loader2, RefreshCw } from 'lucide-react';
 import { getGeminiLiveClient } from '../services/geminiService';
 import { createPcmBlob, base64ToUint8Array, decodeAudioData } from '../services/audioUtils';
-import { Student, AttendanceStatus } from '../types';
+import { Student, AttendanceStatus, UploadedFile, ClassInfo } from '../types';
 import { LiveServerMessage, Modality } from '@google/genai';
 
 interface LiveAttendanceProps {
   students: Student[];
-  onLiveUpdate: (rollNo: string, status: AttendanceStatus) => void;
-  onBulkUpdate: (status: AttendanceStatus) => void;
+  files: UploadedFile[];
+  classes: ClassInfo[];
+  onLiveUpdate: (rollNo: string, status: AttendanceStatus, targetName?: string) => void;
+  onBulkUpdate: (status: AttendanceStatus, targetName?: string) => void;
+  onUpdateFile: (file: UploadedFile) => void;
+  onDeleteFile: (fileId: string) => void;
   onClose: () => void;
 }
 
@@ -24,7 +28,7 @@ const wordToNumber = (text: string): string => {
     return text.replace(/\b(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty)\b/gi, matched => map[matched.toLowerCase()] || matched);
 };
 
-const LiveAttendance: React.FC<LiveAttendanceProps> = ({ students, onLiveUpdate, onBulkUpdate, onClose }) => {
+const LiveAttendance: React.FC<LiveAttendanceProps> = ({ students, files, classes, onLiveUpdate, onBulkUpdate, onUpdateFile, onDeleteFile, onClose }) => {
   const [isConnected, setIsConnected] = useState(false);
   const [isConnecting, setIsConnecting] = useState(false); 
   const [messages, setMessages] = useState<{ role: 'user' | 'ai'; text: string }[]>([]);
@@ -40,15 +44,25 @@ const LiveAttendance: React.FC<LiveAttendanceProps> = ({ students, onLiveUpdate,
   const isConnectedRef = useRef(false);
   const mountedRef = useRef(true);
   
-  // Refs for Callbacks (CRITICAL for fixing "not updating" bug)
+  // Refs for Callbacks
   const onLiveUpdateRef = useRef(onLiveUpdate);
   const onBulkUpdateRef = useRef(onBulkUpdate);
+  const onUpdateFileRef = useRef(onUpdateFile);
+  const onDeleteFileRef = useRef(onDeleteFile);
+  const filesRef = useRef(files);
+  const classesRef = useRef(classes);
 
   // Keep refs updated with latest props
   useEffect(() => {
       onLiveUpdateRef.current = onLiveUpdate;
       onBulkUpdateRef.current = onBulkUpdate;
-  }, [onLiveUpdate, onBulkUpdate]);
+      onUpdateFileRef.current = onUpdateFile;
+      onDeleteFileRef.current = onDeleteFile;
+      filesRef.current = files;
+      classesRef.current = classes;
+  }, [onLiveUpdate, onBulkUpdate, onUpdateFile, onDeleteFile, files, classes]);
+
+  // --- Tool Definitions ---
 
   const markAttendanceTool = {
     name: 'markAttendance',
@@ -57,7 +71,8 @@ const LiveAttendance: React.FC<LiveAttendanceProps> = ({ students, onLiveUpdate,
       type: 'OBJECT',
       properties: {
         rollNo: { type: 'STRING', description: 'The roll number of the student' },
-        status: { type: 'STRING', enum: ['PRESENT', 'ABSENT', 'LATE'] }
+        status: { type: 'STRING', enum: ['PRESENT', 'ABSENT', 'LATE'] },
+        target: { type: 'STRING', description: 'The name of the class, sheet, or file to mark attendance in. If not specified, uses the currently active class.' }
       },
       required: ['rollNo', 'status']
     }
@@ -69,24 +84,67 @@ const LiveAttendance: React.FC<LiveAttendanceProps> = ({ students, onLiveUpdate,
       parameters: {
           type: 'OBJECT',
           properties: {
-              status: { type: 'STRING', enum: ['PRESENT', 'ABSENT', 'LATE'] }
+              status: { type: 'STRING', enum: ['PRESENT', 'ABSENT', 'LATE'] },
+              target: { type: 'STRING', description: 'The name of the class, sheet, or file to mark attendance in.' }
           },
           required: ['status']
       }
   };
 
-  const toolsConfig = [{ functionDeclarations: [markAttendanceTool as any, markAllTool as any] }];
+  const updateFileTool = {
+      name: 'updateFileDetails',
+      description: 'Renames an uploaded file or updates the text content of a note/document. Works for any uploaded file.',
+      parameters: {
+          type: 'OBJECT',
+          properties: {
+              fileId: { type: 'STRING', description: 'The ID of the file to update (found in context)' },
+              newName: { type: 'STRING', description: 'The new name for the file (optional)' },
+              newContent: { type: 'STRING', description: 'The new text content for the file (only for text/note files) (optional)' }
+          },
+          required: ['fileId']
+      }
+  };
+
+  const deleteFileTool = {
+      name: 'deleteFile',
+      description: 'Permanently deletes an uploaded file.',
+      parameters: {
+          type: 'OBJECT',
+          properties: {
+              fileId: { type: 'STRING', description: 'The ID of the file to delete' }
+          },
+          required: ['fileId']
+      }
+  };
+
+  const toolsConfig = [{ functionDeclarations: [markAttendanceTool as any, markAllTool as any, updateFileTool as any, deleteFileTool as any] }];
   
-  const studentContextList = students.map(s => `Roll ${s.rollNo}: ${s.name}`).join(', ');
-  
-  const systemInstruction = `You are an attendance assistant. 
-      Current Class List: ${studentContextList}.
+  // Construct dynamic context
+  const getSystemInstruction = () => {
+    const studentContextList = students.map(s => `Roll ${s.rollNo}: ${s.name}`).join(', ');
+    const fileContextList = filesRef.current.map(f => `[ID: ${f.id}, Name: '${f.name}', Type: ${f.type}]`).join(', ');
+    const classContextList = classesRef.current.map(c => `[Name: '${c.name}', Students: ${c.totalStudents}]`).join(', ');
+
+    return `You are an attendance assistant and file manager.
+      
+      Current Active Class List: ${studentContextList}.
+      
+      ALL AVAILABLE MASTER SHEETS / CLASSES: ${classContextList || "None"}.
+      ALL UPLOADED FILES: ${fileContextList || "None"}.
       
       RULES:
-      1. For "Mark all present except 1", FIRST call 'markAllAttendance(PRESENT)', THEN call 'markAttendance(1, ABSENT)'.
-      2. For "Mark 1 and 2 present", call 'markAttendance' twice.
-      3. Confirm actions concisely.
-  `;
+      1. Attendance: Mark students present/absent. You can mark attendance in ANY class or master sheet by name using the 'target' parameter.
+         - If the user says "Mark roll 1 present in Class 10-A", call markAttendance with target="Class 10-A".
+         - If the user says "Mark roll 1 present in the Physics file", call markAttendance with target="Physics".
+         - If no class is specified, do NOT send a target (it will use the active one).
+      
+      2. File Management: You can rename files or delete them. If the user asks to "change the note" or "update text", use updateFileDetails with newContent.
+      
+      3. Any uploaded file is considered a master sheet. If the user refers to a file that looks like a class (e.g., "Biology List"), assume they want to mark attendance in it or edit it.
+      
+      4. Confirm actions concisely.
+    `;
+  };
 
   // FORCE RESET FUNCTION
   const resetConnection = () => {
@@ -219,19 +277,44 @@ const LiveAttendance: React.FC<LiveAttendanceProps> = ({ students, onLiveUpdate,
                 const responses = [];
                 for (const fc of msg.toolCall.functionCalls) {
                     if (fc.name === 'markAttendance') {
-                        const { rollNo, status } = fc.args as any;
+                        const { rollNo, status, target } = fc.args as any;
                         const normalizedStatus = status.toUpperCase() as AttendanceStatus;
-                        onLiveUpdateRef.current(String(rollNo), normalizedStatus);
-                        setLastAction(`Marked Roll ${rollNo} ${normalizedStatus}`);
+                        onLiveUpdateRef.current(String(rollNo), normalizedStatus, target);
+                        setLastAction(`Marked Roll ${rollNo} ${normalizedStatus} ${target ? `in ${target}` : ''}`);
                         responses.push({ id: fc.id, name: fc.name, response: { result: "Success" } });
-                        setMessages(prev => [...prev, { role: 'ai', text: `Marked Roll ${rollNo} as ${normalizedStatus}` }]);
+                        setMessages(prev => [...prev, { role: 'ai', text: `Marked Roll ${rollNo} as ${normalizedStatus} ${target ? `in ${target}` : ''}` }]);
                     } else if (fc.name === 'markAllAttendance') {
-                        const { status } = fc.args as any;
+                        const { status, target } = fc.args as any;
                         const normalizedStatus = status.toUpperCase() as AttendanceStatus;
-                        onBulkUpdateRef.current(normalizedStatus);
-                        setLastAction(`Marked All ${normalizedStatus}`);
+                        onBulkUpdateRef.current(normalizedStatus, target);
+                        setLastAction(`Marked All ${normalizedStatus} ${target ? `in ${target}` : ''}`);
                         responses.push({ id: fc.id, name: fc.name, response: { result: "Success" } });
-                        setMessages(prev => [...prev, { role: 'ai', text: `Marked everyone as ${normalizedStatus}` }]);
+                        setMessages(prev => [...prev, { role: 'ai', text: `Marked everyone as ${normalizedStatus} ${target ? `in ${target}` : ''}` }]);
+                    } else if (fc.name === 'updateFileDetails') {
+                        const { fileId, newName, newContent } = fc.args as any;
+                        const file = filesRef.current.find(f => f.id === fileId);
+                        if (file) {
+                            const updatedFile = { ...file };
+                            if (newName) updatedFile.name = newName;
+                            if (newContent) updatedFile.content = newContent;
+                            onUpdateFileRef.current(updatedFile);
+                            setLastAction(`Updated File: ${newName || file.name}`);
+                            responses.push({ id: fc.id, name: fc.name, response: { result: "File updated" } });
+                            setMessages(prev => [...prev, { role: 'ai', text: `Updated file ${file.name}` }]);
+                        } else {
+                            responses.push({ id: fc.id, name: fc.name, response: { result: "File not found" } });
+                        }
+                    } else if (fc.name === 'deleteFile') {
+                        const { fileId } = fc.args as any;
+                        const file = filesRef.current.find(f => f.id === fileId);
+                        if (file) {
+                            onDeleteFileRef.current(fileId);
+                            setLastAction(`Deleted File: ${file.name}`);
+                            responses.push({ id: fc.id, name: fc.name, response: { result: "File deleted" } });
+                            setMessages(prev => [...prev, { role: 'ai', text: `Deleted file ${file.name}` }]);
+                        } else {
+                            responses.push({ id: fc.id, name: fc.name, response: { result: "File not found" } });
+                        }
                     }
                 }
                 if (activeSessionRef.current && responses.length > 0) {
@@ -269,7 +352,7 @@ const LiveAttendance: React.FC<LiveAttendanceProps> = ({ students, onLiveUpdate,
           responseModalities: [Modality.AUDIO],
           inputAudioTranscription: {}, 
           speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } } },
-          systemInstruction: systemInstruction,
+          systemInstruction: getSystemInstruction(),
           tools: toolsConfig
         }
       });
@@ -297,8 +380,8 @@ const LiveAttendance: React.FC<LiveAttendanceProps> = ({ students, onLiveUpdate,
   const executeLocalCommand = (text: string): boolean => {
       const normalizedText = wordToNumber(text).toLowerCase();
       
-      // If the command is complex (e.g., "except", "but"), delegate to AI
-      if (normalizedText.includes('except') || normalizedText.includes('but') || (normalizedText.includes('present') && normalizedText.includes('absent'))) {
+      // If the command is complex (e.g., "except", "but", "file", "class"), delegate to AI
+      if (normalizedText.includes('except') || normalizedText.includes('but') || (normalizedText.includes('present') && normalizedText.includes('absent')) || normalizedText.includes('file') || normalizedText.includes('class') || normalizedText.includes('sheet')) {
           return false;
       }
 
@@ -353,7 +436,7 @@ const LiveAttendance: React.FC<LiveAttendanceProps> = ({ students, onLiveUpdate,
               const aiClient = getGeminiLiveClient();
               const chat = aiClient.chats.create({
                   model: 'gemini-2.5-flash',
-                  config: { systemInstruction, tools: toolsConfig }
+                  config: { systemInstruction: getSystemInstruction(), tools: toolsConfig }
               });
               const result = await chat.sendMessage({ message: textToSend });
               const calls = result.functionCalls;
@@ -362,13 +445,30 @@ const LiveAttendance: React.FC<LiveAttendanceProps> = ({ students, onLiveUpdate,
                   let responseText = "";
                   for (const fc of calls) {
                       if (fc.name === 'markAttendance') {
-                           const { rollNo, status } = fc.args as any;
-                           onLiveUpdateRef.current(String(rollNo), status.toUpperCase());
-                           responseText += `Marked ${rollNo} ${status}. `;
+                           const { rollNo, status, target } = fc.args as any;
+                           onLiveUpdateRef.current(String(rollNo), status.toUpperCase(), target);
+                           responseText += `Marked ${rollNo} ${status} ${target ? `in ${target}` : ''}. `;
                       } else if (fc.name === 'markAllAttendance') {
-                           const { status } = fc.args as any;
-                           onBulkUpdateRef.current(status.toUpperCase());
-                           responseText += `Marked all ${status}. `;
+                           const { status, target } = fc.args as any;
+                           onBulkUpdateRef.current(status.toUpperCase(), target);
+                           responseText += `Marked all ${status} ${target ? `in ${target}` : ''}. `;
+                      } else if (fc.name === 'updateFileDetails') {
+                          const { fileId, newName, newContent } = fc.args as any;
+                          const file = filesRef.current.find(f => f.id === fileId);
+                          if (file) {
+                              const updatedFile = { ...file };
+                              if (newName) updatedFile.name = newName;
+                              if (newContent) updatedFile.content = newContent;
+                              onUpdateFileRef.current(updatedFile);
+                              responseText += `Updated ${file.name}. `;
+                          }
+                      } else if (fc.name === 'deleteFile') {
+                          const { fileId } = fc.args as any;
+                          const file = filesRef.current.find(f => f.id === fileId);
+                          if (file) {
+                              onDeleteFileRef.current(fileId);
+                              responseText += `Deleted ${file.name}. `;
+                          }
                       }
                   }
                   setMessages(prev => [...prev, { role: 'ai', text: responseText || "Done." }]);
